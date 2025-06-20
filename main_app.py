@@ -1,4 +1,4 @@
-# main_app.py (Corrected and Updated)
+# main_app.py
 
 import streamlit as st
 import os
@@ -7,9 +7,7 @@ import urllib.parse
 # Import all modularized functions
 from app.config import load_api_keys
 from app.document_processor import load_and_split_document
-from app.langchain_logic import get_retriever, get_llm, get_learning_module_chain # CORRECTED IMPORT
-# We will create a new function in output_generator to handle the new model
-# from app.output_generator import render_module_to_markdown 
+from app.langchain_logic import get_retriever, get_llm, get_learning_module_chain
 
 # --- Load API keys at the very beginning ---
 load_api_keys()
@@ -27,35 +25,95 @@ if 'generated_content' not in st.session_state:
 if 'retriever' not in st.session_state:
     st.session_state.retriever = None
 
-# --- A new helper function to render the markdown ---
-# You can move this to output_generator.py for even cleaner code
-def render_module_to_markdown(module):
-    """Takes a LearningModule object and converts it to a markdown string."""
-    md_string = f"# {module.main_title}\n"
-    
-    for block in module.blocks:
-        md_string += f"\n>[!{block.block_type}] {block.title}\n"
-        if block.content_html:
-            md_string += f"> {block.content_html}\n"
-        
-        if block.is_interactive and block.interactive_questions:
-            base_url = "https://allgemeinbildung.github.io/textbox/answers.html?"
-            params = {
-                'assignmentId': block.assignment_id,
-                'subIds': block.sub_id
-            }
-            for i, q in enumerate(block.interactive_questions, 1):
-                params[f'question{i}'] = q.question_text
-            
-            iframe_url = base_url + urllib.parse.urlencode(params)
-            md_string += f'><iframe src="{iframe_url}" style="border:0px #ffffff none;" name="myiFrame" scrolling="yes" frameborder="1" marginheight="0px" marginwidth="0px" height="450px" width="100%" allowfullscreen></iframe>\n'
 
-        if block.audio_url:
-            md_string += f'>[!hint] **Radiobeitrag** ><audio controls><source src="{block.audio_url}"></audio>\n'
-            if block.audio_source_url:
-                md_string += f'> Quelle: [{block.audio_source_url}]({block.audio_source_url})\n'
+# --- START: REWRITTEN MARKDOWN RENDERER ---
+def render_interactive_block(block):
+    """Helper function to render an interactive questions block to an iframe string."""
+    base_url = "https://allgemeinbildung.github.io/textbox/answers.html?"
+    params = {
+        'assignmentId': block.assignment_id,
+        'subIds': block.sub_id
+    }
+    for i, q_text in enumerate(block.questions, 1):
+        params[f'question{i}'] = q_text
+    
+    iframe_url = base_url + urllib.parse.urlencode(params)
+    return f'><iframe src="{iframe_url}" style="border:0px #ffffff none;" name="myiFrame" scrolling="yes" frameborder="1" marginheight="0px" marginwidth="0px" height="450px" width="100%" allowfullscreen></iframe>\n'
+
+def render_module_to_markdown(module):
+    """
+    Takes a FullLearningUnit object and converts it to a markdown string.
+    This function is now aligned with the complex Pydantic model.
+    """
+    # 1. Frontmatter
+    md_string = "---\n"
+    md_string += f"topic: {module.frontmatter.topic}\n"
+    md_string += f"chapter: {module.frontmatter.chapter}\n"
+    md_string += f"type: {module.frontmatter.type}\n"
+    md_string += f"source: {module.frontmatter.source}\n"
+    md_string += f'summary: "{module.frontmatter.summary}"\n'
+    md_string += "---\n"
+    
+    # 2. Main Title - CORRECTED to use 'title'
+    md_string += f"# {module.title}\n"
+    
+    # 3. Objectives Block
+    obj_block = module.objectives_block
+    md_string += f"\n>[!info] Worum geht es?\n> {obj_block.introduction}\n"
+    md_string += ">>[!success] Lernziele\n"
+    for obj in obj_block.objectives:
+        md_string += f">> - {obj}\n"
+    md_string += f"\n>#### Schlüsselbegriffe\n> {', '.join(obj_block.keywords)}\n"
+    md_string += f"\n>#### Aspekte der Allgemeinbildung\n> {', '.join(obj_block.aspects)}\n"
+
+    # 4. Activation Questions
+    act_block = module.activation_questions
+    md_string += f"\n>[!question] {act_block.title}\n"
+    md_string += render_interactive_block(act_block)
+
+    # 5. Importance Block
+    imp_block = module.importance_block
+    md_string += f"\n>[!info] Warum ist das wichtig?\n"
+    for point in imp_block.points:
+        md_string += f"> - {point}\n"
+
+    # 6. Media Block
+    media = module.media_block
+    if media.audio_url:
+        md_string += f"\n>[!hint] **Radiobeitrag** \n><audio controls><source src=\"{media.audio_url}\"></audio>\n"
+    md_string += f"> Quelle: [Originalquelle]({media.source_url})\n"
+    md_string += ">>[!quote] Beantworten Sie folgende Verständnisfragen:\n"
+    md_string += render_interactive_block(media.comprehension_questions)
+    
+    # 7. Answers Iframe
+    md_string += f"\n>[!success]- Antworten\n"
+    md_string += f'><iframe src="{module.answers_block.iframe_url}" style="border:0px #ffffff none;" name="myiFrame" scrolling="yes" frameborder="1" marginheight="0px" marginwidth="0px" height="400px" width="100%" allowfullscreen></iframe>\n'
+
+    # 8. Teacher Materials
+    solutions = module.solution_suggestions
+    md_string += "\n%-%-%-\n\n# LP-MATERIAL\n"
+    md_string += f'>[!warning] {solutions.answer_key_name} - Lösungsvorschläge\n'
+    for i, sol in enumerate(solutions.solutions, 1):
+        md_string += f"> {i}. **Antwort zu Frage {i}:** {sol}\n"
+        
+    # 9. Language Deep Dive
+    deep_dive = module.language_deep_dive
+    md_string += f"\n# {deep_dive.title}\n"
+    md_string += f"\n>[!abstract] Auftrag\n> {deep_dive.instruction}\n"
+    if media.audio_url:
+        md_string += f'>>[!hint] **Radiobeitrag** \n>><audio controls><source src="{media.audio_url}"></audio>\n'
+    
+    md_string += "\n## Textsorten\n"
+    for assign in deep_dive.writing_assignments:
+        md_string += f"\n### {assign.text_type}\n"
+        md_string += f'>[!info] **[[{assign.text_type}]]**\n> Ziel: {assign.objective}\n'
+        md_string += f'>>[!note]- {assign.text_type} erfassen \n>>#### Schritt-für-Schritt Anleitung\n'
+        md_string += render_interactive_block(assign.guidance_questions)
+        md_string += f'>>\n>>[[{assign.text_type}#✔ Bewertung]]\n'
 
     return md_string
+# --- END: REWRITTEN MARKDOWN RENDERER ---
+
 
 # --- Sidebar for Configuration ---
 with st.sidebar:
@@ -102,12 +160,10 @@ if generate_button:
         with st.spinner(f"Running module generation with '{model_name}'. The LLM is thinking..."):
             try:
                 llm = get_llm(provider, model_name)
-                # CORRECTED FUNCTION CALL: Use the new function and unpack the two return values
                 rag_chain, parser = get_learning_module_chain(llm, st.session_state.retriever)
                 
                 result = rag_chain.invoke({"input": topic})
                 
-                # Use the returned parser to convert the raw string into our Pydantic object
                 st.session_state.generated_content = parser.parse(result['answer'])
                 st.success("Learning Module generated successfully!")
 
@@ -136,10 +192,10 @@ if st.session_state.generated_content:
     st.download_button(
         label="Download as .md file",
         data=markdown_output,
-        file_name=f"{module_object.main_title.replace(' ', '_')}.md",
+        # CORRECTED to use 'title'
+        file_name=f"{module_object.title.replace(' ', '_')}.md",
         mime="text/markdown"
     )
 
     with st.expander("Show Generated JSON Data"):
-        # The .json() method is deprecated, use .model_dump_json() instead
         st.json(module_object.model_dump_json(indent=2))
